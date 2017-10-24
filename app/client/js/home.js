@@ -3,9 +3,216 @@
  Client side interface.  Primarily listening for events in order to update the
  interface in near real-time.  All data loaded intially server side.
  */
-
-// TODO Update with current token address and compile json data
 const tokenAddress = '0x4c766478f7f19878fa6533fa491f687b89164f21'
+const hubAddress = '0xc604974af81108ccd2b901dc48472961efe8a331'
+
+$(document).ready(() => {
+  initializeApp()
+
+  $('#addUser').click(e => {
+    e.preventDefault()
+
+    // Grab values from the form
+    const address = $('#address').val()
+    const name = $('#name').val()
+    const position = $('#position').val()
+    const location = $('#location').val()
+
+    // Send the transaction
+    addUser(address, name, position, location)
+  })
+})
+
+/**
+* Add a new user to the hub.
+*/
+async function addUser(address, name, position, location) {
+ const tx = await hub.addUser(address, name, position, location,
+   {
+     from: defaultAccount,
+     gas: 4e6
+   }
+ )
+ console.log('Tx Hash: ' + tx)
+}
+
+/**
+ * Append a new user to the contributors tables.
+ * @param  {Array} userData Array of user info
+ */
+function appendNewUser(userData) {
+  $('#participantsTable').append(
+    '<tr><td>'
+    + userData[0] + '</td><td>' // name
+    + userData[1] + '</td><td>' // position
+    + userData[2] + '</td><td>' // location
+    + userData[3]               // reputation
+    + ' ' + symbol
+    + '</td><</tr>'
+  )
+}
+
+/**
+ * Initialize the app, loading data primarily.
+ */
+async function initializeApp() {
+  await initEtherConnection()
+
+  if (tokenAddress !== 'TODO') {
+    // Init the token contract reference object, require contract abi and address
+    window.token = await web3.eth.contract(tokenJson.abi).at(tokenAddress)
+    console.log(window.token)
+
+    window.hub = await web3.eth.contract(hubJson.abi).at(hubAddress)
+    console.log(hub)
+
+    loadUsers()
+
+    // Set the total supply and symbol
+    window.totalSupply = (await token.totalSupply()).toNumber()
+    window.symbol = (await token.symbol()).valueOf()
+    $('#totalSupply').text('Total Supply: ' + totalSupply + ' ' + symbol)
+
+  } else {
+    console.error('Please deploy your token and update the tokenAddress at home.js#L14')
+  }
+
+  // TODO create contract listeners
+  // Listen for tokens being minted
+   // Listen starting from now, 'latest'.
+   token.LogTokensMinted({ fromBlock: 'latest', toBlock: 'latest'})
+   .watch((error, result) => {
+     if (error) {
+       console.error(error)
+
+     } else {
+       console.log(result)
+       // Update the total supply
+       totalSupply += result.args.value.toNumber()
+       $('#totalSupply').text('Total Supply: ' + totalSupply + ' ' + symbol)
+     }
+   })
+
+ // Listen starting from now, 'latest'.
+ hub.LogUserAdded({ fromBlock: 'latest', toBlock: 'latest'})
+ .watch(async (error, result) => {
+   if (error) {
+     console.error(error)
+
+   } else {
+     console.log(result)
+     // Get all of the associated data for this user
+     const userData = await hub.userData_(result.args.user)
+     userData[3] = 0 // Reputation / holdings default to 0 tokens
+     // Append to the table
+     appendNewUser(userData)
+   }
+ })
+
+    // Listen for all Events for both token and hub
+    token.allEvents({ fromBlock: 'latest', toBlock: 'latest'})
+    .watch((error, result) => {
+      updateNewsFeed(result)
+    })
+
+    hub.allEvents({ fromBlock: 'latest', toBlock: 'latest'})
+    .watch((error, result) => {
+      updateNewsFeed(result)
+    })
+}
+
+/**
+ * Initialize the connection to a local ether client.
+ */
+async function initEtherConnection() {
+  window.web3 = new Web3(
+    new Web3.providers.HttpProvider('http://localhost:8545')
+  )
+
+  window.defaultAccount = web3.eth.accounts[0]
+
+  // Quick check that web3 connection successful
+  console.log('web3 Connected? ' + web3.isConnected())
+  console.log('Default Account: ' + defaultAccount)
+}
+
+/**
+    * Prepend a new item to the newsfeed table
+    * @param  {Object} data The event log object.
+    */
+   async function updateNewsFeed(data) {
+     let _event = data['event']
+
+     // Parse out the log prefix
+     if (_event.includes('Log'))
+       _event = data['event'].replace('Log', '')
+
+     let img
+     let args
+
+     let userData
+
+     // Define event specific attributes(img, arguments) and prepend
+     if (_event === 'UserAdded') {
+       img = '<img class="d-flex mr-3 rounded-circle" src="img/userAdded.png" height="55" width="55">'
+       userData = await hub.userData_(data.args.user)
+       args = 'Name: ' + userData[0] + '</br>Position: ' + userData[1] + '</br>Location: ' + userData[2]
+
+     } else if (_event === 'ResourceAdded') {
+       img = '<img class="d-flex mr-3 rounded-circle" src="img/resourceAdded.png" height="55" width="55">'
+       userData = await hub.userData_(data.args.user)
+       args = data.args.resourceUrl + '</br> Added by: ' + userData[0]
+
+     } else if (_event === 'TokensMinted') {
+       img = '<img class="d-flex mr-3 rounded-circle" src="img/tokensMinted.png" height="55" width="55">'
+       userData = await hub.userData_(data.args.to)
+       args = '1 BLG token minted!' + '</br> To: ' + userData[0]
+
+     } else if (_event === 'ErrorString') {
+       _event = _event.replace('String', '')
+       img = '<img class="d-flex mr-3 rounded-circle" src="img/error.png" height="55" width="55">'
+       args = '' + data.args.errorString
+
+     } else {
+       _event = _event.replace('String', '')
+       img = ''
+       args = '' + JSON.stringify(data.args)
+     }
+
+     // Finally prepend the div to the table
+     $('#newsFeed').prepend(
+       '<a href="#" class="list-group-item list-group-item-action">'
+         +'<div class="media">'
+           + img
+           +'<div class="media-body">'
+             +'<strong>'+ data['event'].replace('Log', '') +'</strong></br>'
+             + args
+             +'<div class="text-muted smaller">Transaction: '+ data['transactionHash'].slice(0, 20) +'...</div>'
+             +'<div class="text-muted smaller">Mined at block: '+ data['blockNumber'] +'</div>'
+           +'</div>'
+         +'</div>'
+       +'</a>'
+     )
+   }
+
+/**
+* Load all users within the hub.
+*/
+async function loadUsers() {
+ // retrieve all user addresses, utilized as ids
+ const users = await hub.getAllUsers()
+ let userData
+ let balance
+
+ for (let i = 0; i < users.length; i++) {
+   // Get each user's data and append
+   userData = await hub.userData_(users[i])
+   // Retrieve the user's balance from the token
+   userData[3] = (await token.balanceOf(users[i])).toNumber()
+   appendNewUser(userData)
+ }
+}
+
 // Copy the contents of ../build/contracts/Token.json
 const tokenJson = {
   "contract_name": "Token",
@@ -477,8 +684,6 @@ const tokenJson = {
   "updated_at": 1507582755898
 }
 
-const hubAddress = '0xc604974af81108ccd2b901dc48472961efe8a331'
-// Copy the contents of ../build/contracts/Hub.json
 const hubJson = {
   "contract_name": "Hub",
   "abi": [
@@ -784,211 +989,4 @@ const hubJson = {
   },
   "schema_version": "0.0.5",
   "updated_at": 1507582755909
-}
-
-$(document).ready(() => {
-  initializeApp()
-
-  $('#addUser').click(e => {
-    e.preventDefault()
-
-    // Grab values from the form
-    const address = $('#address').val()
-    const name = $('#name').val()
-    const position = $('#position').val()
-    const location = $('#location').val()
-
-    // Send the transaction
-    addUser(address, name, position, location)
-  })
-})
-
-/**
-* Add a new user to the hub.
-*/
-async function addUser(address, name, position, location) {
- const tx = await hub.addUser(address, name, position, location,
-   {
-     from: defaultAccount,
-     gas: 4e6
-   }
- )
- console.log('Tx Hash: ' + tx)
-}
-
-/**
- * Append a new user to the contributors tables.
- * @param  {Array} userData Array of user info
- */
-function appendNewUser(userData) {
-  $('#participantsTable').append(
-    '<tr><td>'
-    + userData[0] + '</td><td>' // name
-    + userData[1] + '</td><td>' // position
-    + userData[2] + '</td><td>' // location
-    + userData[3]               // reputation
-    + ' ' + symbol
-    + '</td><</tr>'
-  )
-}
-
-/**
- * Initialize the app, loading data primarily.
- */
-async function initializeApp() {
-  await initEtherConnection()
-
-  if (tokenAddress !== 'TODO') {
-    // Init the token contract reference object, require contract abi and address
-    window.token = await web3.eth.contract(tokenJson.abi).at(tokenAddress)
-    console.log(window.token)
-
-    window.hub = await web3.eth.contract(hubJson.abi).at(hubAddress)
-    console.log(hub)
-
-    loadUsers()
-
-    // Set the total supply and symbol
-    window.totalSupply = (await token.totalSupply()).toNumber()
-    window.symbol = (await token.symbol()).valueOf()
-    $('#totalSupply').text('Total Supply: ' + totalSupply + ' ' + symbol)
-
-  } else {
-    console.error('Please deploy your token and update the tokenAddress at home.js#L14')
-  }
-
-  // TODO create contract listeners
-  // Listen for tokens being minted
-   // Listen starting from now, 'latest'.
-   token.LogTokensMinted({ fromBlock: 'latest', toBlock: 'latest'})
-   .watch((error, result) => {
-     if (error) {
-       console.error(error)
-
-     } else {
-       console.log(result)
-       // Update the total supply
-       totalSupply += result.args.value.toNumber()
-       $('#totalSupply').text('Total Supply: ' + totalSupply + ' ' + symbol)
-     }
-   })
-
- // Listen starting from now, 'latest'.
- hub.LogUserAdded({ fromBlock: 'latest', toBlock: 'latest'})
- .watch(async (error, result) => {
-   if (error) {
-     console.error(error)
-
-   } else {
-     console.log(result)
-     // Get all of the associated data for this user
-     const userData = await hub.userData_(result.args.user)
-     userData[3] = 0 // Reputation / holdings default to 0 tokens
-     // Append to the table
-     appendNewUser(userData)
-   }
- })
-
-    // Listen for all Events for both token and hub
-    token.allEvents({ fromBlock: 'latest', toBlock: 'latest'})
-    .watch((error, result) => {
-      updateNewsFeed(result)
-    })
-
-    hub.allEvents({ fromBlock: 'latest', toBlock: 'latest'})
-    .watch((error, result) => {
-      updateNewsFeed(result)
-    })
-}
-
-/**
- * Initialize the connection to a local ether client.
- */
-async function initEtherConnection() {
-  window.web3 = new Web3(
-    new Web3.providers.HttpProvider('http://localhost:8545')
-  )
-
-  window.defaultAccount = web3.eth.accounts[0]
-
-  // Quick check that web3 connection successful
-  console.log('web3 Connected? ' + web3.isConnected())
-  console.log('Default Account: ' + defaultAccount)
-}
-
-/**
-    * Prepend a new item to the newsfeed table
-    * @param  {Object} data The event log object.
-    */
-   async function updateNewsFeed(data) {
-     let _event = data['event']
-
-     // Parse out the log prefix
-     if (_event.includes('Log'))
-       _event = data['event'].replace('Log', '')
-
-     let img
-     let args
-
-     let userData
-
-     // Define event specific attributes(img, arguments) and prepend
-     if (_event === 'UserAdded') {
-       img = '<img class="d-flex mr-3 rounded-circle" src="img/userAdded.png" height="55" width="55">'
-       userData = await hub.userData_(data.args.user)
-       args = 'Name: ' + userData[0] + '</br>Position: ' + userData[1] + '</br>Location: ' + userData[2]
-
-     } else if (_event === 'ResourceAdded') {
-       img = '<img class="d-flex mr-3 rounded-circle" src="img/resourceAdded.png" height="55" width="55">'
-       userData = await hub.userData_(data.args.user)
-       args = data.args.resourceUrl + '</br> Added by: ' + userData[0]
-
-     } else if (_event === 'TokensMinted') {
-       img = '<img class="d-flex mr-3 rounded-circle" src="img/tokensMinted.png" height="55" width="55">'
-       userData = await hub.userData_(data.args.to)
-       args = '1 BLG token minted!' + '</br> To: ' + userData[0]
-
-     } else if (_event === 'ErrorString') {
-       _event = _event.replace('String', '')
-       img = '<img class="d-flex mr-3 rounded-circle" src="img/error.png" height="55" width="55">'
-       args = '' + data.args.errorString
-
-     } else {
-       _event = _event.replace('String', '')
-       img = ''
-       args = '' + JSON.stringify(data.args)
-     }
-
-     // Finally prepend the div to the table
-     $('#newsFeed').prepend(
-       '<a href="#" class="list-group-item list-group-item-action">'
-         +'<div class="media">'
-           + img
-           +'<div class="media-body">'
-             +'<strong>'+ data['event'].replace('Log', '') +'</strong></br>'
-             + args
-             +'<div class="text-muted smaller">Transaction: '+ data['transactionHash'].slice(0, 20) +'...</div>'
-             +'<div class="text-muted smaller">Mined at block: '+ data['blockNumber'] +'</div>'
-           +'</div>'
-         +'</div>'
-       +'</a>'
-     )
-   }
-
-/**
-* Load all users within the hub.
-*/
-async function loadUsers() {
- // retrieve all user addresses, utilized as ids
- const users = await hub.getAllUsers()
- let userData
- let balance
-
- for (let i = 0; i < users.length; i++) {
-   // Get each user's data and append
-   userData = await hub.userData_(users[i])
-   // Retrieve the user's balance from the token
-   userData[3] = (await token.balanceOf(users[i])).toNumber()
-   appendNewUser(userData)
- }
 }
